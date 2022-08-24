@@ -24,6 +24,15 @@ static cpc_endpoint_t zigbee_cpc_endpoint;
 
 static const int max_restart_attempts = 3;
 
+static void print_data(uint8_t *data, int len)
+{
+	int i;
+	for (i = 0; i < len; i++) {
+		printf("%02x ", data[i]);
+	}
+	printf("\n");
+}
+
 static void reset_crash_callback(void)
 {
 	int ret = 0;
@@ -172,17 +181,17 @@ int main(int argc, char *argv[])
 		max_fd = ezsp_fd < cpc_fd ? cpc_fd : ezsp_fd;
 
 		ret = select(max_fd + 1, &rfds, NULL, NULL, NULL);
-		printf("select ret %d\n", ret);
 		if (ret == -1)
 			perror("pselect()");
 		else if (ret) {
 			if (FD_ISSET(ezsp_fd, &rfds)) {
 				count = read(ezsp_fd, buf, EZSP_BUFFER_SIZE);
-				printf("EZSP -> CPC %d bytes\n", count);
 				if (count == 0) {
 					printf("Connection closed\n");
 					exit(EXIT_SUCCESS);
 				}
+				printf("EZSP -> CPC %d bytes\n", count);
+				print_data(buf, count);
 
 				/* Guarantees to write count */
 				ret = cpc_write_endpoint(zigbee_cpc_endpoint,
@@ -196,6 +205,7 @@ int main(int argc, char *argv[])
 				count = cpc_read_endpoint(zigbee_cpc_endpoint,
 							  buf, EZSP_BUFFER_SIZE, SL_CPC_FLAG_NON_BLOCK);
 				printf("CPC -> EZSP %d bytes\n", count);
+				print_data(buf, count);
 
 				tmp = buf;
 				while (count) {
@@ -209,7 +219,6 @@ int main(int argc, char *argv[])
 				}
 			}
 		}
-		printf("end, ret %d\n", ret);
 	}
 
 	return EXIT_SUCCESS;
