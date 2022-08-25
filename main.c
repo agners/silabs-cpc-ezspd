@@ -10,9 +10,14 @@
 #include <netinet/in.h>
 
 #include "sl_cpc.h"
+#include "ash.h"
 
 #define EZSP_BUFFER_SIZE 4096
 #define ZIGBEE_CPC_TRANSMIT_WINDOW 1
+#define DEBUG 0
+
+#define debug_printf(fmt, ...) \
+            do { if (DEBUG) fprintf(stderr, fmt, ##__VA_ARGS__); } while (0)
 
 int ezsp_socket = -1;
 struct in6_addr ezsp_listen_address = IN6ADDR_ANY_INIT;
@@ -28,9 +33,9 @@ static void print_data(uint8_t *data, int len)
 {
 	int i;
 	for (i = 0; i < len; i++) {
-		printf("%02x ", data[i]);
+		debug_printf("%02x ", data[i]);
 	}
-	printf("\n");
+	debug_printf("\n");
 }
 
 static void reset_crash_callback(void)
@@ -127,11 +132,15 @@ int socket_start(void)
 	}
 	printf("Accepted connection %d.\n", socket_fd);
 
-	//close(server_fd);
+	close(server_fd);
 
-	int flags;
-	flags = fcntl(socket_fd, F_GETFL, 0);
-	fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK);
+	fcntl(socket_fd, F_SETFL, O_NONBLOCK);
+
+	if (setsockopt(socket_fd, IPPROTO_TCP,
+			TCP_NODELAY, &opt,
+			sizeof(opt))) {
+		perror("setsockopt()");
+	}
 
 	return socket_fd;
 }
@@ -152,16 +161,16 @@ void sigint_handler(int sig)
 
 int main(int argc, char *argv[])
 {
-	char *buf, *tmp;
+	char *ezsp_buf, *ash_buf, *tmp;
 	ssize_t count;
 	int ret;
 	fd_set rfds;
-	int cpc_fd, ezsp_fd, max_fd;
+	int cpc_fd, socket_fd, max_fd;
 
 	printf("Starting ezspd\n");
 
-	ezsp_fd = socket_start();
-	if (ezsp_fd < 0)
+	socket_fd = socket_start();
+	if (socket_fd < 0)
 		exit(EXIT_FAILURE);
 
 	cpc_fd = cpc_start();
@@ -170,48 +179,55 @@ int main(int argc, char *argv[])
 
 	signal(SIGINT, sigint_handler);
 
-	buf = malloc(EZSP_BUFFER_SIZE);
+	ezsp_buf = malloc(EZSP_BUFFER_SIZE);
+	ash_buf = malloc(EZSP_BUFFER_SIZE);
 
 	while (true)
 	{
 		FD_ZERO(&rfds);
-		FD_SET(ezsp_fd, &rfds);
+		FD_SET(socket_fd, &rfds);
 		FD_SET(cpc_fd, &rfds);
 
-		max_fd = ezsp_fd < cpc_fd ? cpc_fd : ezsp_fd;
+		max_fd = socket_fd < cpc_fd ? cpc_fd : socket_fd;
 
 		ret = select(max_fd + 1, &rfds, NULL, NULL, NULL);
 		if (ret == -1)
 			perror("pselect()");
 		else if (ret) {
-			if (FD_ISSET(ezsp_fd, &rfds)) {
-				count = read(ezsp_fd, buf, EZSP_BUFFER_SIZE);
+			if (FD_ISSET(socket_fd, &rfds)) {
+				count = read(socket_fd, ash_buf, EZSP_BUFFER_SIZE);
 				if (count == 0) {
 					printf("Connection closed\n");
 					exit(EXIT_SUCCESS);
 				}
-				printf("EZSP -> CPC %d bytes\n", count);
-				print_data(buf, count);
+				debug_printf("socket -> radio %d bytes\n", count);
+				print_data(ash_buf, count);
+				count = decode_data_frame(ash_buf, count, ezsp_buf);
 
 				/* Guarantees to write count */
-				ret = cpc_write_endpoint(zigbee_cpc_endpoint,
-						         buf, count, 0); 
-				if (ret < 0) {
-					perror("Error writing to CPC\n");
-					exit(EXIT_FAILURE);
+				if (count) {
+					print_data(ezsp_buf, count);
+					ret = cpc_write_endpoint(zigbee_cpc_endpoint,
+								 ezsp_buf, count, 0);
+					if (ret < 0) {
+						perror("Error writing to CPC\n");
+						exit(EXIT_FAILURE);
+					}
 				}
 			}
 			if (FD_ISSET(cpc_fd, &rfds)) {
 				count = cpc_read_endpoint(zigbee_cpc_endpoint,
-							  buf, EZSP_BUFFER_SIZE, SL_CPC_FLAG_NON_BLOCK);
-				printf("CPC -> EZSP %d bytes\n", count);
-				print_data(buf, count);
+							  ezsp_buf, EZSP_BUFFER_SIZE, SL_CPC_FLAG_NON_BLOCK);
+				debug_printf("radio -> socket %d bytes\n", count);
+				print_data(ezsp_buf, count);
+				count = encode_data_frame(ezsp_buf, count, ash_buf);
+				print_data(ash_buf, count);
 
-				tmp = buf;
+				tmp = ash_buf;
 				while (count) {
-					ret = write(ezsp_fd, tmp, count);
+					ret = write(socket_fd, tmp, count);
 					if (ret < 0) {
-						perror("Error writing to CPC\n");
+						perror("Error writing to socket\n");
 						exit(EXIT_FAILURE);
 					}
 					tmp += ret;

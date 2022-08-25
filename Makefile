@@ -3,8 +3,11 @@ CFLAGS=
 LDFLAGS=
 LIBS=-lcpc
 
-ezspd: main.c
-	$(CC) -o $@ $< $(LIBS) $(CFLAGS) $(LDFLAGS)
+%.o: %.c ash.h
+	$(CC) -c -o $@ $< $(CFLAGS) -std=c99
+
+ezspd: main.o ash.o
+	$(CC) -o $@ $^ $(LIBS) $(LDFLAGS)
 
 all: ezspd
 
