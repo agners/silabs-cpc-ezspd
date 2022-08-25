@@ -165,7 +165,7 @@ int ash_decode_data(uint8_t data, uint8_t *out_frame)
 		receive_buffer_ptr = receive_buffer;
 
 		if (tmp[0] == 0xc0) {
-			fprintf(stderr, "RST frame received");
+			fprintf(stderr, "RST frame received\n");
 			return -2;
 		}
 		return 0;
