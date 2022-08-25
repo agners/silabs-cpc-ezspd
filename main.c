@@ -159,22 +159,99 @@ void sigint_handler(int sig)
 	exit(0);
 }
 
+/*
+ * Read ASH encapsulated EZSP messages from socket
+ *
+ * Since TCP/IP sockets is a byte stream, we can't rely on a full packet being
+ * received.
+ */
+static void read_socket(int socket_fd, uint8_t *ash_buf, uint8_t *ezsp_buf)
+{
+	ssize_t count;
+	uint8_t *tmp;
+	int ret;
+
+	count = read(socket_fd, ash_buf, EZSP_BUFFER_SIZE);
+	if (count == 0) {
+		printf("Connection closed, exiting.\n");
+		exit(EXIT_SUCCESS);
+	}
+	debug_printf("socket -> radio %d bytes\n", count);
+	print_data(ash_buf, count);
+
+	tmp = ash_buf;
+	while (count) {
+		ret = ash_decode_data(*tmp, ezsp_buf);
+		if (ret > 0) {
+			/*
+			 * Frame decoded, send to radio via cpc
+			 *
+			 * cpc guarantees to send count.
+			 */
+			ret = cpc_write_endpoint(zigbee_cpc_endpoint,
+						 ezsp_buf, ret, 0);
+			if (ret < 0) {
+				perror("Error writing to CPC\n");
+				exit(EXIT_FAILURE);
+			}
+		}
+		if (ret == -2) {
+			/* HACK: Stack reset received, fake RSTACK frame */
+			const uint8_t rstack[] = { 0xc1, 0x02, 0x0b, 0x0a, 0x52, 0x7e };
+			write(socket_fd, rstack, sizeof(rstack));
+		}
+		tmp++;
+		count--;
+	}
+}
+
+/*
+ * Reads EZSP message from CPC endpoint
+ *
+ * This assumes that a complete EZSP frame is returned by the CPC endpoint.
+ * Since CPC is a packet based transport, we can rely on this
+ */
+static void read_cpc(int socket_fd, uint8_t *ash_buf, uint8_t *ezsp_buf)
+{
+	ssize_t count;
+	uint8_t *tmp;
+	int ret;
+
+	count = cpc_read_endpoint(zigbee_cpc_endpoint,
+				  ezsp_buf, EZSP_BUFFER_SIZE, SL_CPC_FLAG_NON_BLOCK);
+	debug_printf("radio -> socket %d bytes\n", count);
+	print_data(ezsp_buf, count);
+	count = ash_encode_data_frame(ezsp_buf, count, ash_buf);
+	print_data(ash_buf, count);
+
+	tmp = ash_buf;
+	while (count) {
+		ret = write(socket_fd, tmp, count);
+		if (ret < 0) {
+			perror("Error writing to socket\n");
+			exit(EXIT_FAILURE);
+		}
+		tmp += ret;
+		count -= ret;
+	}
+}
+
 int main(int argc, char *argv[])
 {
-	char *ezsp_buf, *ash_buf, *tmp;
-	ssize_t count;
+	uint8_t *ezsp_buf, *ash_buf;
 	int ret;
 	fd_set rfds;
 	int cpc_fd, socket_fd, max_fd;
 
 	printf("Starting ezspd\n");
-
-	socket_fd = socket_start();
-	if (socket_fd < 0)
-		exit(EXIT_FAILURE);
+	ash_init();
 
 	cpc_fd = cpc_start();
 	if (cpc_fd < 0)
+		exit(EXIT_FAILURE);
+
+	socket_fd = socket_start();
+	if (socket_fd < 0)
 		exit(EXIT_FAILURE);
 
 	signal(SIGINT, sigint_handler);
@@ -194,46 +271,10 @@ int main(int argc, char *argv[])
 		if (ret == -1)
 			perror("pselect()");
 		else if (ret) {
-			if (FD_ISSET(socket_fd, &rfds)) {
-				count = read(socket_fd, ash_buf, EZSP_BUFFER_SIZE);
-				if (count == 0) {
-					printf("Connection closed\n");
-					exit(EXIT_SUCCESS);
-				}
-				debug_printf("socket -> radio %d bytes\n", count);
-				print_data(ash_buf, count);
-				count = decode_data_frame(ash_buf, count, ezsp_buf);
-
-				/* Guarantees to write count */
-				if (count) {
-					print_data(ezsp_buf, count);
-					ret = cpc_write_endpoint(zigbee_cpc_endpoint,
-								 ezsp_buf, count, 0);
-					if (ret < 0) {
-						perror("Error writing to CPC\n");
-						exit(EXIT_FAILURE);
-					}
-				}
-			}
-			if (FD_ISSET(cpc_fd, &rfds)) {
-				count = cpc_read_endpoint(zigbee_cpc_endpoint,
-							  ezsp_buf, EZSP_BUFFER_SIZE, SL_CPC_FLAG_NON_BLOCK);
-				debug_printf("radio -> socket %d bytes\n", count);
-				print_data(ezsp_buf, count);
-				count = encode_data_frame(ezsp_buf, count, ash_buf);
-				print_data(ash_buf, count);
-
-				tmp = ash_buf;
-				while (count) {
-					ret = write(socket_fd, tmp, count);
-					if (ret < 0) {
-						perror("Error writing to socket\n");
-						exit(EXIT_FAILURE);
-					}
-					tmp += ret;
-					count -= ret;
-				}
-			}
+			if (FD_ISSET(socket_fd, &rfds))
+				read_socket(socket_fd, ash_buf, ezsp_buf);
+			if (FD_ISSET(cpc_fd, &rfds))
+				read_cpc(socket_fd, ash_buf, ezsp_buf);
 		}
 	}
 

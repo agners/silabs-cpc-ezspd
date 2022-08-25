@@ -4,6 +4,8 @@
 
 #include "ash.h"
 
+#define ASH_BUFFER_SIZE (4096)
+
 static const uint8_t flag = 0x7e;
 static const uint8_t escape = 0x7d;
 static const uint8_t xon = 0x11;
@@ -18,6 +20,10 @@ static const uint8_t randomize_seq = 0xb8;
 
 static uint8_t frm_seq = 0;
 static uint8_t rec_seq = 0;
+
+static uint8_t *tmp_buffer;
+static uint8_t *receive_buffer;
+static uint8_t *receive_buffer_ptr;
 
 
 static void xor_data_frame_payload(uint8_t *payload, int len)
@@ -40,7 +46,7 @@ static void xor_data_frame_payload(uint8_t *payload, int len)
  *
  * target buffer must be twice the size of len!
  */
-int stuff_frame(const uint8_t *frame, int len, uint8_t *target)
+static int stuff_frame(const uint8_t *frame, int len, uint8_t *target)
 {
 	int i, dst;
 
@@ -58,7 +64,7 @@ int stuff_frame(const uint8_t *frame, int len, uint8_t *target)
 	return dst;
 }
 
-int unstuff_frame(const uint8_t *frame, int len, uint8_t *target)
+static int unstuff_frame(const uint8_t *frame, int len, uint8_t *target)
 {
 	int i, dst;
 
@@ -74,7 +80,7 @@ int unstuff_frame(const uint8_t *frame, int len, uint8_t *target)
 	return dst;
 }
 
-uint16_t crc16(const uint8_t* frame, int len){
+static uint16_t crc16(const uint8_t* frame, int len){
 	uint8_t x;
 	uint16_t crc = 0xffff;
 
@@ -86,16 +92,25 @@ uint16_t crc16(const uint8_t* frame, int len){
 	return crc;
 }
 
-int encode_data_frame(uint8_t *frame, int len, uint8_t *out_frame)
+void ash_init(void)
+{
+	tmp_buffer = malloc(ASH_BUFFER_SIZE);
+	receive_buffer = malloc(ASH_BUFFER_SIZE);
+	receive_buffer_ptr = receive_buffer;
+}
+
+/*
+ * Encodes passed data into a ASH data frame
+ */
+int ash_encode_data_frame(uint8_t *frame, int len, uint8_t *out_frame)
 {
 	int out_len;
 	uint8_t retrans = 0;
 	uint16_t crc;
-	uint8_t *tmp;
+	uint8_t *tmp = tmp_buffer;
 
 	xor_data_frame_payload(frame, len);
        
-	tmp = malloc(len * 2 + 3);
 	tmp[0] = ((frm_seq & 0x7) << 4) | (retrans << 3) | (rec_seq & 0x7);
 	frm_seq++;
 	memcpy(tmp + 1, frame, len);
@@ -109,36 +124,62 @@ int encode_data_frame(uint8_t *frame, int len, uint8_t *out_frame)
 	return out_len + 1;
 }
 
-int decode_data_frame(uint8_t *frame, int len, uint8_t *out_frame)
+/*
+ * Decodes ASH data stream. Must be called until 0 is returned.
+ */
+int ash_decode_data(uint8_t data, uint8_t *out_frame)
 {
+	int len;
 	uint16_t crc;
-	uint8_t *tmp;
+	uint8_t *tmp = tmp_buffer;
 
-	/* Strip flag */
-	len--;
-	if (frame[len] != flag)
-		fprintf(stderr, "ERROR, no flag at end!\n");
+	if (data == cancel) {
+		/* Cancel all received bytes */
+		receive_buffer_ptr = receive_buffer;
+		return 0;
+	}
 
-	tmp = malloc(len);
-	unstuff_frame(frame, len, tmp);
+	if (data != flag) {
+		/* Add data to receive buffer */
+		*receive_buffer_ptr = data;
+		receive_buffer_ptr++;
+		return 0;
+	}
+
+	/* Flag detected, processes data... */
+	len = receive_buffer_ptr - receive_buffer;
+	len = unstuff_frame(receive_buffer, len, tmp);
+
+	/* Check CRC */
 	len -= 2;
 	crc = crc16(tmp, len);
 	if (tmp[len + 0] != (uint8_t)(crc >> 8) || 
 	    tmp[len + 1] != (uint8_t)(crc & 0xff)) {
-		fprintf(stderr, "CRC error!\n");
+		fprintf(stderr, "CRC error %04x vs %02x%02x!\n", crc, tmp[len + 0], tmp[len + 1]);
+		receive_buffer_ptr = receive_buffer;
 		return -1;
 	}
 
 	/* Just ignore non-data frames for now... */
-	if (tmp[0] & 0x80)
+	if (tmp[0] & 0x80) {
+		receive_buffer_ptr = receive_buffer;
+
+		if (tmp[0] == 0xc0) {
+			fprintf(stderr, "RST frame received");
+			return -2;
+		}
 		return 0;
+	}
 
 	rec_seq++;
 
-	/* Strip control frame */
+	/* Strip control byte */
 	len--;
 	memcpy(out_frame, tmp + 1, len);
 	xor_data_frame_payload(out_frame, len);
+
+	/* Reset buffer */
+	receive_buffer_ptr = receive_buffer;
 
 	return len;
 }
