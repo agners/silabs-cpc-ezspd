@@ -125,7 +125,7 @@ int socket_start(void)
 		return -1;
 	}
 
-	printf("Accepting connection.\n");
+	printf("Accepting connections...\n");
 	if ((socket_fd = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
 		perror("accept()");
 		return -1;
@@ -165,7 +165,7 @@ void sigint_handler(int sig)
  * Since TCP/IP sockets is a byte stream, we can't rely on a full packet being
  * received.
  */
-static void read_socket(int socket_fd, uint8_t *ash_buf, uint8_t *ezsp_buf)
+static int read_socket(int socket_fd, uint8_t *ash_buf, uint8_t *ezsp_buf)
 {
 	ssize_t count;
 	uint8_t *tmp;
@@ -174,7 +174,7 @@ static void read_socket(int socket_fd, uint8_t *ash_buf, uint8_t *ezsp_buf)
 	count = read(socket_fd, ash_buf, EZSP_BUFFER_SIZE);
 	if (count == 0) {
 		printf("Connection closed, exiting.\n");
-		exit(EXIT_SUCCESS);
+		return -1;
 	}
 	debug_printf("socket -> radio %d bytes\n", count);
 	print_data(ash_buf, count);
@@ -276,8 +276,14 @@ int main(int argc, char *argv[])
 		if (ret == -1)
 			perror("pselect()");
 		else if (ret) {
-			if (FD_ISSET(socket_fd, &rfds))
-				read_socket(socket_fd, ash_buf, ezsp_buf);
+			if (FD_ISSET(socket_fd, &rfds)) {
+				ret = read_socket(socket_fd, ash_buf, ezsp_buf);
+				if (ret < 0) {
+					socket_fd = socket_start();
+					if (socket_fd < 0)
+						exit(EXIT_FAILURE);
+				}
+			}
 			if (FD_ISSET(cpc_fd, &rfds))
 				read_cpc(socket_fd, ash_buf, ezsp_buf);
 		}
