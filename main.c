@@ -219,7 +219,7 @@ static void read_cpc(int socket_fd, uint8_t *ash_buf, uint8_t *ezsp_buf)
 
 	count = cpc_read_endpoint(zigbee_cpc_endpoint,
 				  ezsp_buf, EZSP_BUFFER_SIZE, SL_CPC_FLAG_NON_BLOCK);
-	if (ret < 0) {
+	if (count < 0) {
 		perror("Error reading from CPC\n");
 		exit(EXIT_FAILURE);
 	}
