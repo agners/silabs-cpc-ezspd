@@ -176,7 +176,7 @@ static int read_socket(int socket_fd, uint8_t *ash_buf, uint8_t *ezsp_buf)
 		printf("Connection closed, exiting.\n");
 		return -1;
 	}
-	debug_printf("socket -> radio %d bytes\n", count);
+	debug_printf("socket -> radio %ld bytes\n", count);
 	print_data(ash_buf, count);
 
 	tmp = ash_buf;
@@ -203,6 +203,8 @@ static int read_socket(int socket_fd, uint8_t *ash_buf, uint8_t *ezsp_buf)
 		tmp++;
 		count--;
 	}
+
+	return 0;
 }
 
 /*
@@ -219,12 +221,12 @@ static void read_cpc(int socket_fd, uint8_t *ash_buf, uint8_t *ezsp_buf)
 
 	count = cpc_read_endpoint(zigbee_cpc_endpoint,
 				  ezsp_buf, EZSP_BUFFER_SIZE, SL_CPC_FLAG_NON_BLOCK);
-	if (ret < 0) {
+	if (count < 0) {
 		perror("Error reading from CPC\n");
 		exit(EXIT_FAILURE);
 	}
 
-	debug_printf("radio -> socket %d bytes\n", count);
+	debug_printf("radio -> socket %ld bytes\n", count);
 	print_data(ezsp_buf, count);
 	count = ash_encode_data_frame(ezsp_buf, count, ash_buf);
 	print_data(ash_buf, count);

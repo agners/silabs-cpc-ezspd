@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=
+CFLAGS=-Wall
 LDFLAGS=
 LIBS=-lcpc
 
@@ -14,4 +14,4 @@ all: ezspd
 .PHONY: clean
 
 clean:
-	rm -f ezspd
+	rm -f ezspd main.o ash.o
